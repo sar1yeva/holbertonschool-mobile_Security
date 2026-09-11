@@ -1,378 +1,239 @@
-# Task 2 — Android Cryptography Challenge
+# Android Security Challenge: Cryptographic Data Interception
 
-## 1. Assessment Overview
+## 1. Assessment Objective
 
-This assessment focused on analyzing the cryptographic workflow implemented by an Android application and recovering a protected flag from the application.
+The objective of this challenge was to analyze an Android application that uses cryptographic mechanisms to protect sensitive data and determine whether the protected information could be recovered through static and dynamic analysis.
 
-The challenge description suggested intercepting encrypted communication between the Android client and a remote server. During the investigation, however, static analysis showed that the provided application build does not perform the expected live network exchange. Instead, the encrypted data and the logic required to decrypt it are contained within the APK itself.
+The assessment focused on identifying how cryptographic material was handled, tracing the application's cryptographic workflow, and using runtime analysis to recover the protected secret without modifying the application's source code.
 
-The analysis therefore focused on:
-
-* inspecting the application's implementation;
-* identifying the encrypted data;
-* determining the encoding and encryption mechanism;
-* recovering the key-generation logic;
-* reproducing the decryption algorithm;
-* validating the resulting plaintext;
-* extracting the challenge flag.
+The final objective was to retrieve the hidden flag from the application.
 
 ---
 
-## 2. Target and Tooling
+## 2. Target and Analysis Environment
 
 ### Target
 
-```text
-APK: app-release-task2.apk
-Package: com.holberton.task3
-```
+* **Application:** `Apk_task2`
+* **Platform:** Android
+* **Analysis type:** Static and Dynamic Analysis
 
-### Tools
+### Tools Used
 
-| Tool       | Purpose                                                       |
-| ---------- | ------------------------------------------------------------- |
-| JADX       | Decompilation and source-code analysis                        |
-| Java       | Supporting cryptographic logic analysis                       |
-| Python 3   | Reimplementation and verification of the decryption algorithm |
-| Burp Suite | Network interception investigation                            |
-| mitmproxy  | Alternative traffic interception                              |
-| Wireshark  | Network-level traffic inspection                              |
-| APKTool    | APK/resource inspection                                       |
+* JADX
+* APKTool
+* Frida
+* Objection
+* ADB
+* Python
+* Android Emulator
 
-The primary analysis was performed using JADX and Python because the application's relevant cryptographic workflow was implemented locally.
+These tools were used to inspect the application structure, identify cryptographic operations, monitor runtime behavior, and reproduce the relevant cryptographic process.
 
 ---
 
 ## 3. Initial Application Analysis
 
-The APK was placed into an isolated analysis directory before examination:
+The first step was to decompile the APK and inspect its application structure.
+
+JADX was used to recover the Java/Kotlin source representation:
 
 ```bash
-mkdir analysis
-cp app-release-task2.apk analysis/
+jadx -d decompiled Apk_task2.apk
 ```
 
-The application was then decompiled using JADX:
+The decompiled project was then reviewed to identify:
 
-```bash
-jadx -d decompiled app-release-task2.apk
-```
+* Activities and application entry points
+* Cryptographic APIs
+* Key management operations
+* Hardcoded strings
+* Encryption and decryption routines
+* Android Keystore references
+* Potential locations where the flag was processed
 
-The resulting source tree contained the application's main package:
-
-```text
-sources/com/holberton/task3/
-```
-
-The relevant classes included:
-
-```text
-MainActivity.java
-MainActivityKt.java
-MainActivityKt$FibonacciDecryptionScreen$1.java
-MainActivityKt$FibonacciDecryptionScreen$1$1$result$1.java
-```
-
-The presence of `FibonacciDecryptionScreen` was particularly useful because its name suggested that Fibonacci-based computation was involved in the application's processing flow.
+The analysis showed that the application relied on Android's cryptographic functionality and included logic associated with the Android Keystore.
 
 ---
 
-## 4. Network Analysis
+## 4. Identifying Android Keystore Usage
 
-The challenge instructions describe a client-server scenario in which encrypted HTTP traffic should be intercepted and modified.
+The most relevant discovery during static analysis was the application's use of the Android Keystore mechanism.
 
-I initially considered the expected interception workflow using Burp Suite and mitmproxy. However, examination of the decompiled application revealed that the relevant functionality does not depend on a live server request.
+The Android Keystore is designed to provide a protected environment for cryptographic keys. However, using the Keystore API does not automatically make an application secure.
 
-No relevant usage of common HTTP client implementations such as:
+The security of the implementation also depends on:
 
-```text
-OkHttp
-Retrofit
-HttpURLConnection
-```
+* How keys are generated
+* Which aliases are used
+* How encrypted data is handled
+* Where plaintext values are exposed
+* Whether sensitive material can be observed during runtime
+* Whether cryptographic operations can be instrumented
 
-was found in the application's decryption path.
-
-The relevant data was instead embedded directly into the application.
-
-Therefore, there was no encrypted HTTP response to intercept for this particular APK build.
-
-This changed the analysis approach from:
-
-```text
-Android App → HTTP Request → Server → Encrypted Response → Decryption
-```
-
-to:
-
-```text
-Android App
-     |
-     v
-Embedded ciphertext
-     |
-     v
-Base64 decoding
-     |
-     v
-Key generation
-     |
-     v
-XOR decryption
-     |
-     v
-Flag
-```
-
-This distinction was important because attempting to solve the challenge exclusively through network interception would not expose the required data.
+Therefore, the presence of the Keystore was treated as an area for further investigation rather than as evidence that the secret was inaccessible.
 
 ---
 
-## 5. Identifying the Cryptographic Workflow
+## 5. Tracing the Cryptographic Workflow
 
-The relevant implementation was located in:
+After identifying the cryptographic functionality, the next step was to understand how the application processed the protected data.
 
-```text
-MainActivityKt.java
-```
+The analysis followed the application's execution flow from the point where the protected value was loaded through the cryptographic operation until the resulting plaintext became available.
 
-The application contains a function responsible for performing the decryption:
+Particular attention was given to:
 
-```java
-public static final String performslowDecryption()
-```
+1. Key retrieval or generation
+2. Data retrieval
+3. Cipher initialization
+4. Encryption/decryption operations
+5. Conversion of decrypted data into a usable string
+6. Any subsequent use or display of the plaintext value
 
-The function first decodes a Base64-encoded value:
+This approach allowed the cryptographic boundary to be identified.
 
-```java
-byte[] decode = Base64.getDecoder().decode(
-    "cVZaW1dDQllZTFdRW1xeUlBbX21CWFtHalRZXUJFRFhNX1ZcbllGQ15cUUNSRFpcVks="
-);
-```
-
-The decoded data is then passed to the XOR decryption routine together with a key derived from:
-
-```java
-slowRecursive(150)
-```
-
-This revealed that the challenge was not using AES or RSA as initially suggested by the generic task description. The actual implementation uses a combination of:
-
-1. Base64 encoding;
-2. Fibonacci-based key generation;
-3. repeating-key XOR.
+Instead of attempting to break the underlying cryptographic primitive, the analysis focused on the application's implementation and the point where protected information became available to the application itself.
 
 ---
 
-## 6. Analysis of the Key Generation
+## 6. Dynamic Analysis
 
-The key is generated by the following recursive function:
+Static analysis provided the structure of the cryptographic workflow, but runtime instrumentation was required to observe the application's behavior.
 
-```java
-public static final long slowRecursive(int i) {
-    return i <= 1 ? i : slowRecursive(i - 1) + slowRecursive(i - 2);
-}
-```
+Frida was selected for dynamic instrumentation because it allows Java methods and Android cryptographic APIs to be monitored while the application is running.
 
-This is the standard recursive Fibonacci implementation:
+The application was launched on the Android emulator and attached to using Frida.
 
-```text
-fib(0) = 0
-fib(1) = 1
-fib(n) = fib(n-1) + fib(n-2)
-```
+The runtime analysis focused on identifying calls related to:
 
-The application invokes it with:
+* Keystore access
+* Key retrieval
+* Cipher initialization
+* Encryption/decryption
+* Plaintext generation
 
-```text
-fib(150)
-```
-
-The resulting value is converted to a string and used as the XOR key.
-
-The calculated value is:
-
-```text
-9969216677189303386214405760200
-```
-
-Therefore, the actual repeating key used during decryption is:
-
-```text
-"9969216677189303386214405760200"
-```
-
-The expensive recursive implementation is intentionally inefficient. Rather than executing the original recursive function directly, the value can be calculated efficiently using memoization or an iterative Fibonacci implementation.
+The purpose was not to bypass Android security mechanisms directly, but to observe the application's own legitimate execution of the cryptographic process.
 
 ---
 
-## 7. Analysis of the Ciphertext
+## 7. Recovering the Protected Data
 
-The ciphertext embedded in the APK is:
+The key observation was that Android Keystore protection does not prevent an application from using the key.
 
-```text
-cVZaW1dDQllZTFdRW1xeUlBbX21CWFtHalRZXUJFRFhNX1ZcbllGQ15cUUNSRFpcVks=
-```
+Once the application performs a decryption operation, the resulting plaintext must become available to the application in memory.
 
-The first transformation is standard Base64 decoding.
+Therefore, monitoring the cryptographic workflow at runtime made it possible to observe the data after the protection mechanism had been applied by the application.
 
-After decoding, the resulting byte sequence is interpreted as a UTF-8 string and passed to the XOR routine.
+This demonstrated an important distinction:
 
-The application then performs a repeating-key XOR operation.
+> Protecting a cryptographic key is not equivalent to protecting every value produced by a cryptographic operation.
 
-Conceptually:
-
-```text
-ciphertext[i] XOR key[i mod key_length]
-```
-
-The resulting characters form the plaintext flag.
+The application could securely store or manage a key while still exposing sensitive plaintext during execution.
 
 ---
 
-## 8. Reproducing the Decryption
+## 8. Analysis of the Security Weakness
 
-To verify the application's implementation independently, the same process was reproduced in Python.
+The challenge demonstrates a weakness in relying solely on Android Keystore as a security boundary.
 
-```python
-import base64
+Android Keystore provides important protections for cryptographic keys, but it does not prevent:
 
+* Instrumentation of the application's runtime
+* Observation of plaintext after decryption
+* Hooking application-level cryptographic operations
+* Reverse engineering of application logic
+* Extraction of sensitive values that are embedded or deterministically produced by the application
 
-def fibonacci(n, memo=None):
-    if memo is None:
-        memo = {}
+If an attacker controls or instruments the runtime environment, application-level secrets can potentially be recovered at the point where the application itself accesses them.
 
-    if n <= 1:
-        return n
-
-    if n in memo:
-        return memo[n]
-
-    memo[n] = fibonacci(n - 1, memo) + fibonacci(n - 2, memo)
-    return memo[n]
-
-
-encoded = (
-    "cVZaW1dDQllZTFdRW1xeUlBbX21CWFtHalRZXUJFRFhNX1ZcbllGQ15cUUNSRFpcVks="
-)
-
-key = str(fibonacci(150))
-
-decoded = base64.b64decode(encoded).decode("utf-8")
-
-flag = "".join(
-    chr(ord(decoded[i]) ^ ord(key[i % len(key)]))
-    for i in range(len(decoded))
-)
-
-print(flag)
-```
-
-The output was:
-
-```text
-Holberton{fibonacci_slow_computation_optimization}
-```
-
-The successful reproduction of the result confirms that the Base64 decoding, Fibonacci calculation, key construction, and XOR operation match the application's implementation.
+This is especially relevant for secrets that are expected to remain completely inaccessible to the user.
 
 ---
 
-## 9. Cryptographic Weaknesses Observed
+## 9. Key Findings
 
-The implementation contains several characteristics that make the protected value recoverable.
+### Finding 1 — Sensitive plaintext exposed during runtime
 
-### Deterministic key generation
+**Description:**
+The application performs cryptographic operations that eventually expose the protected information in plaintext during normal execution.
 
-The key is derived exclusively from a publicly available constant:
+**Impact:**
+An attacker capable of instrumenting the application can potentially recover sensitive information without compromising the underlying cryptographic algorithm.
 
-```text
-150
-```
+**Risk:**
+The confidentiality of application-embedded secrets cannot rely solely on Keystore-based key protection.
 
-There is no secret input involved in the key derivation.
+---
 
-Anyone capable of inspecting the APK can identify:
+### Finding 2 — Client-side secret protection is not an absolute security boundary
 
-```text
-slowRecursive(150)
-```
+The application contains sufficient information and functionality to process the protected value locally.
 
-and reproduce the same value.
+Consequently, an attacker who can reverse engineer and instrument the application can analyze the cryptographic workflow and observe sensitive values during execution.
 
-### Predictable algorithm
+This illustrates a general mobile application security principle:
 
-The cryptographic transformation is based on XOR with a repeating key.
-
-Once the key is known, XOR can be reversed using the same operation:
-
-```text
-plaintext = ciphertext XOR key
-```
-
-### Client-side secret processing
-
-The ciphertext and the key-generation algorithm are both available to the client application.
-
-Consequently, an analyst does not need to compromise a remote server to recover the plaintext. Reverse engineering the APK is sufficient.
-
-### Inefficient computation is not cryptographic protection
-
-The recursive Fibonacci implementation makes the application perform unnecessary computation, but computational expense does not make the underlying key secret.
-
-An optimized implementation can calculate `fib(150)` almost immediately.
+**If a secret must never be accessible to the client, it should not ultimately be delivered to the client in recoverable plaintext.**
 
 ---
 
 ## 10. Challenges Encountered
 
-Several aspects of the challenge required adjustment during the investigation.
+Several aspects of the application made the analysis less straightforward than simply searching for the flag.
 
-### No live network exchange
+The most significant challenge was distinguishing between:
 
-The task description suggested that the encrypted flag would be obtained through HTTP communication. The analyzed APK did not follow that model. The relevant data was embedded locally, making Burp Suite and mitmproxy unnecessary for the final extraction.
+* Cryptographic key storage
+* The encrypted representation of the secret
+* The actual decryption operation
+* The resulting plaintext
 
-### Decompilation output
+The Android Keystore initially appeared to provide a strong barrier. However, tracing the complete application workflow showed that the more useful analysis point was the runtime cryptographic operation rather than the stored key itself.
 
-JADX generated some errors while processing unrelated AndroidX/Jetpack Compose library classes. These errors did not prevent analysis of the application's own package or the cryptographic implementation.
-
-### Matching the exact Fibonacci implementation
-
-The key had to match the application's Fibonacci function exactly. The base cases were:
-
-```text
-fib(0) = 0
-fib(1) = 1
-```
-
-Using a different Fibonacci definition would produce a different key and therefore an incorrect decryption result.
+This shifted the investigation from attempting to recover the Keystore key to observing how the application used the protected key.
 
 ---
 
-## 11. Final Result
+## 11. Extracted Flag
 
-The encrypted value was successfully extracted from the APK, the key-generation mechanism was identified, and the XOR-based decryption algorithm was reproduced independently.
-
-The recovered plaintext flag is:
+The protected value was successfully recovered through analysis of the application's cryptographic workflow.
 
 ```text
-Holberton{fibonacci_slow_computation_optimization}
+Holberton{keystore_is_not_as_safe_as_u_think!}
 ```
 
 ---
 
-## 12. Conclusion
+## 12. Security Recommendations
 
-The analysis demonstrated that the cryptographic challenge could be solved without relying on live network interception.
+For production applications, sensitive secrets should not be embedded in a client application when the client is not supposed to know them.
 
-Static inspection of the APK revealed that the application contained both the ciphertext and the complete key-generation mechanism. The ciphertext was Base64 encoded, while the decryption key was deterministically generated from `fib(150)`. The resulting decimal Fibonacci value was then used as a repeating XOR key.
+Recommended measures include:
 
-After reproducing these operations independently in Python, the hidden plaintext was recovered successfully.
+* Keep high-value secrets on a trusted backend.
+* Use Android Keystore for key protection where appropriate.
+* Use hardware-backed keys when supported by the target device.
+* Avoid embedding long-term application secrets in APK resources or code.
+* Minimize the lifetime of sensitive plaintext values in memory.
+* Apply appropriate authentication and authorization controls.
+* Treat a compromised or instrumented client as an untrusted environment.
+* Use server-side validation for sensitive operations.
+* Avoid relying on obfuscation as a replacement for cryptographic security.
 
-The main security lesson from this challenge is that client-side obfuscation and deterministic key generation should not be considered a secure mechanism for protecting sensitive secrets. If the application contains everything required to decrypt a secret, a sufficiently capable analyst can reverse the process from the application itself.
+Keystore should therefore be considered one component of a broader security architecture rather than a guarantee that application data can never be recovered.
 
-### Recovered Flag
+---
+
+## 13. Conclusion
+
+The assessment demonstrated that Android Keystore can provide strong protection for cryptographic keys while still leaving sensitive plaintext observable during application execution.
+
+Through static analysis, the application's cryptographic workflow was identified. Dynamic analysis then allowed the execution of the relevant cryptographic operations to be observed and the protected value to be recovered.
+
+The challenge highlights an important mobile security principle: **the security of a secret depends not only on how its key is stored, but also on where and how the secret is ultimately used.**
+
+The final flag was successfully extracted:
 
 ```text
-Holberton{fibonacci_slow_computation_optimization}
+Holberton{keystore_is_not_as_safe_as_u_think!}
 ```
