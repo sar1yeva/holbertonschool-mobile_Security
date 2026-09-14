@@ -1,4 +1,5 @@
 The Responsible Disclosure Dilemma: Balancing Security, Ethics, and Public Safety
+------
 
 1. Introduction
 
