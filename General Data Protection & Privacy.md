@@ -1,5 +1,4 @@
-
-*** Data Breach Response and Privacy Compliance Plan ***
+Data Breach Response and Privacy Compliance Plan
 ----------
 
 1. Introduction
